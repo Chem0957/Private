@@ -58,6 +58,23 @@ except ModuleNotFoundError as exc:
     ) from exc
 
 
+SEM_LABEL_COLORS = np.array(
+    [
+        [0.000, 0.447, 0.698, 1.0],  # blue
+        [0.902, 0.624, 0.000, 1.0],  # orange
+        [0.000, 0.620, 0.451, 1.0],  # green
+        [0.835, 0.369, 0.000, 1.0],  # vermillion
+        [0.800, 0.475, 0.655, 1.0],  # magenta
+        [0.337, 0.706, 0.914, 1.0],  # sky
+        [0.949, 0.894, 0.259, 1.0],  # yellow
+        [0.576, 0.439, 0.859, 1.0],  # violet
+        [0.941, 0.200, 0.200, 1.0],  # red
+        [0.300, 0.300, 0.300, 1.0],  # gray
+    ],
+    dtype=np.float32,
+)
+
+
 # -----------------------------
 # I/O
 # -----------------------------
@@ -369,6 +386,24 @@ def compute_metrics(img: np.ndarray, emap: np.ndarray, seg, mode: str) -> dict:
 # -----------------------------
 # Save / visualization
 # -----------------------------
+def make_discrete_label_cmap(n_labels: int):
+    """High-contrast discrete colormap for integer labels [0, n_labels-1]."""
+    if n_labels < 1:
+        raise ValueError(f"n_labels must be >= 1. Got {n_labels}")
+
+    if n_labels <= len(SEM_LABEL_COLORS):
+        colors = SEM_LABEL_COLORS[:n_labels]
+    else:
+        extra_n = n_labels - len(SEM_LABEL_COLORS)
+        extra = plt.cm.tab20(np.linspace(0.0, 1.0, max(extra_n, 1)))[:extra_n]
+        colors = np.vstack([SEM_LABEL_COLORS, extra])
+
+    cmap = mcolors.ListedColormap(colors, name="sem_labels")
+    boundaries = np.arange(-0.5, n_labels + 0.5, 1.0)
+    norm = mcolors.BoundaryNorm(boundaries, ncolors=n_labels)
+    return cmap, norm
+
+
 def save_quicklook(img, emap, seg, outdir, mode):
     os.makedirs(outdir, exist_ok=True)
 
@@ -396,10 +431,14 @@ def save_quicklook(img, emap, seg, outdir, mode):
         ax2.axis("off")
         cax.axis("off")
     else:
-        im = ax2.imshow(seg.astype(np.int32), interpolation="nearest")
+        labels = seg.astype(np.int32)
+        n_labels = int(np.max(labels) + 1)
+        cmap, norm = make_discrete_label_cmap(n_labels)
+
+        im = ax2.imshow(labels, cmap=cmap, norm=norm, interpolation="nearest")
         ax2.set_title("Segmentation (k-means)")
         ax2.axis("off")
-        fig.colorbar(im, cax=cax)
+        fig.colorbar(im, cax=cax, ticks=np.arange(n_labels))
 
     fig.savefig(os.path.join(outdir, "quicklook.png"), dpi=300)
     plt.close(fig)
@@ -428,17 +467,16 @@ def save_phase_only_png(seg, metrics: dict, outdir: str, mode: str):
     for lab, idx in label_to_idx.items():
         phase_vis[labels == lab] = float(idx)
 
-    cmap_arr = plt.cm.tab10(np.linspace(0.0, 1.0, max(len(phase_labels), 2)))
-    cmap = mcolors.ListedColormap(cmap_arr[: len(phase_labels)])
+    cmap, norm = make_discrete_label_cmap(len(phase_labels))
+    cmap = mcolors.ListedColormap(cmap.colors.copy())
     cmap.set_bad(color=(0.0, 0.0, 0.0, 1.0))  # boundary shown as black
 
     fig, ax = plt.subplots(1, 1, figsize=(6, 6), constrained_layout=True)
     im = ax.imshow(
-        phase_vis,
+        np.ma.masked_invalid(phase_vis),
         cmap=cmap,
+        norm=norm,
         interpolation="nearest",
-        vmin=0,
-        vmax=max(len(phase_labels) - 1, 0),
     )
     ax.set_title("Phase map (boundary excluded)")
     ax.axis("off")
