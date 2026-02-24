@@ -1,0 +1,24 @@
+# macOS / editor
+.DS_Store
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+.python-version
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Local plotting cache
+.mplconfig/
+
+# Large binary/image outputs
+*.tif
+*.tiff
+Archive/
+2025_CLSM*/
+sweep_out/
