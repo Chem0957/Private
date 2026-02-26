@@ -479,12 +479,12 @@ def compute_metrics(
     excluded_labels = sorted(excluded)
 
     if excluded_labels:
-        slag_roi_mask = ~np.isin(labels, np.array(excluded_labels, dtype=np.int32))
+        analysis_mask = ~np.isin(labels, np.array(excluded_labels, dtype=np.int32))
     else:
-        slag_roi_mask = np.ones(labels.shape, dtype=bool)
+        analysis_mask = np.ones(labels.shape, dtype=bool)
 
     boundary_mask = labels == int(boundary_label) if boundary_label is not None else np.zeros(labels.shape, dtype=bool)
-    interior_mask = slag_roi_mask
+    interior_mask = analysis_mask
     interior_total = int(np.sum(interior_mask))
 
     phase_stats = []
@@ -495,17 +495,15 @@ def compute_metrics(
         phase_count_total = int(row["count"])
         phase_count = int(np.sum((labels == int(row["label"])) & interior_mask))
         phase_row["count_total"] = phase_count_total
-        phase_row["count_slag_roi"] = phase_count
+        phase_row["count_no_boundary"] = phase_count
         # Backward-compatible aliases
         phase_row["count"] = phase_count_total
         phase_row["frac_total"] = float(phase_count_total / total) if total > 0 else float("nan")
         phase_row["frac"] = phase_row["frac_total"]
         if interior_total > 0:
-            phase_row["frac_slag_roi"] = float(phase_count / interior_total)
+            phase_row["frac_no_boundary"] = float(phase_count / interior_total)
         else:
-            phase_row["frac_slag_roi"] = float("nan")
-        # Backward-compatible key
-        phase_row["frac_no_boundary"] = phase_row["frac_slag_roi"]
+            phase_row["frac_no_boundary"] = float("nan")
         phase_stats.append(phase_row)
 
     skel = skeletonize(boundary_mask)
@@ -516,24 +514,23 @@ def compute_metrics(
     out["boundary_detected"] = bool(boundary_label is not None)
     out["boundary_inference"] = boundary_info
     out["roi_excluded_labels"] = excluded_labels
-    out["slag_roi_pixels"] = interior_total
-    out["slag_roi_area_frac"] = float(interior_total / float(total)) if total > 0 else float("nan")
+    out["interior_pixels"] = interior_total
+    out["interior_area_frac"] = float(interior_total / float(total)) if total > 0 else float("nan")
     excluded_area_px = int(total - interior_total)
     out["excluded_area_pixels"] = excluded_area_px
     out["excluded_area_frac"] = float(excluded_area_px / float(total)) if total > 0 else float("nan")
     out["boundary_area_frac"] = float(np.mean(boundary_mask))
-    out["interior_area_frac"] = float(interior_total / float(total)) if total > 0 else float("nan")
     out["interior_label_count"] = int(len(phase_stats))
     out["phase_stats"] = phase_stats
     # Backward-compatible alias
     out["interior_class_stats"] = phase_stats
-    out["phase_frac_primary"] = "slag_roi"
+    out["phase_frac_primary"] = "total"
     phase_frac_total_sum = float(np.sum([float(r["frac_total"]) for r in phase_stats])) if phase_stats else 0.0
-    phase_frac_slag_roi_sum = (
-        float(np.sum([float(r["frac_slag_roi"]) for r in phase_stats])) if interior_total > 0 and phase_stats else float("nan")
+    phase_frac_no_boundary_sum = (
+        float(np.sum([float(r["frac_no_boundary"]) for r in phase_stats])) if interior_total > 0 and phase_stats else float("nan")
     )
     out["phase_frac_sum_total"] = phase_frac_total_sum
-    out["phase_frac_sum_slag_roi"] = phase_frac_slag_roi_sum
+    out["phase_frac_sum_no_boundary"] = phase_frac_no_boundary_sum
     out["closure_boundary_plus_phase_total"] = float(out["boundary_area_frac"] + phase_frac_total_sum)
     out["closure_excluded_plus_phase_total"] = float(out["excluded_area_frac"] + phase_frac_total_sum)
 
@@ -659,7 +656,7 @@ def save_phase_only_png(seg, metrics: dict, outdir: str, mode: str):
         norm=norm,
         interpolation="nearest",
     )
-    ax.set_title("Phase map (slag ROI)")
+    ax.set_title("Phase map (excluded labels hidden)")
     ax.axis("off")
 
     ticks = np.arange(len(phase_labels))
@@ -686,24 +683,21 @@ def build_phase_summary_rows(metrics: dict) -> list[dict]:
         label = int(row["label"])
         phase_row = phase_map.get(label)
         if phase_row is None:
-            count_slag_roi = 0
-            frac_slag_roi = 0.0
+            count_no_boundary = 0
             frac_no_boundary = 0.0
         else:
-            count_slag_roi = int(phase_row.get("count_slag_roi", phase_row.get("count", 0)))
-            frac_slag_roi = float(phase_row.get("frac_slag_roi", float("nan")))
-            frac_no_boundary = float(phase_row.get("frac_no_boundary", frac_slag_roi))
+            count_no_boundary = int(phase_row.get("count_no_boundary", 0))
+            frac_no_boundary = float(phase_row.get("frac_no_boundary", float("nan")))
 
         rows.append(
             {
                 "phase_label": label,
                 "count_total": int(row["count"]),
                 "frac_total": float(row["frac"]),
-                "count_slag_roi": count_slag_roi,
-                "frac_slag_roi": frac_slag_roi,
+                "count_no_boundary": count_no_boundary,
                 "frac_no_boundary": frac_no_boundary,
                 "is_boundary": int(boundary_label is not None and int(boundary_label) == label),
-                "is_excluded_from_slag_roi": int(label in excluded),
+                "is_excluded": int(label in excluded),
                 "edge_mean": float(row["edge_mean"]),
                 "edge_std": float(row["edge_std"]),
                 "int_mean": float(row["int_mean"]),
@@ -722,11 +716,10 @@ def save_phase_summary_csv(metrics: dict, outdir: str) -> None:
         "phase_label",
         "count_total",
         "frac_total",
-        "count_slag_roi",
-        "frac_slag_roi",
+        "count_no_boundary",
         "frac_no_boundary",
         "is_boundary",
-        "is_excluded_from_slag_roi",
+        "is_excluded",
         "edge_mean",
         "edge_std",
         "int_mean",
@@ -767,25 +760,25 @@ def save_outputs(img, emap, seg, metrics: dict, outdir: str, mode: str):
                 )
 
         if "phase_stats" in metrics:
-            f.write("\nphase_stats (slag ROI denominator):\n")
+            f.write("\nphase_stats (no-boundary denominator):\n")
             for row in metrics["phase_stats"]:
                 f.write(
                     f"  label {row['label']}: count_total={row['count_total']}, "
-                    f"count_slag_roi={row['count_slag_roi']}, "
+                    f"count_no_boundary={row['count_no_boundary']}, "
                     f"frac_total={row['frac_total']:.6f}, "
-                    f"frac_slag_roi={row['frac_slag_roi']:.6f}, "
+                    f"frac_no_boundary={row['frac_no_boundary']:.6f}, "
                     f"edge={row['edge_mean']:.6f}±{row['edge_std']:.6f}, "
                     f"int={row['int_mean']:.6f}±{row['int_std']:.6f}\n"
                 )
         if phase_summary_rows:
-            f.write("\nphase_summary (grouped by phase label):\n")
+            f.write("\nphase_summary (grouped by metric):\n")
             for row in phase_summary_rows:
                 f.write(
                     f"  phase {row['phase_label']}: count_total={row['count_total']}, "
-                    f"count_slag_roi={row['count_slag_roi']}, "
+                    f"count_no_boundary={row['count_no_boundary']}, "
                     f"frac_total={row['frac_total']:.6f}, "
                     f"frac_no_boundary={row['frac_no_boundary']:.6f}, "
-                    f"excluded={row['is_excluded_from_slag_roi']}, "
+                    f"excluded={row['is_excluded']}, "
                     f"boundary={row['is_boundary']}\n"
                 )
 
@@ -817,13 +810,12 @@ def flatten_metrics_for_csv(metrics: dict) -> dict:
         for row in phase_summary_rows:
             label = int(row["phase_label"])
             flat[f"phase{label}_count_total"] = int(row["count_total"])
-            flat[f"phase{label}_count_slag_roi"] = int(row["count_slag_roi"])
+            flat[f"phase{label}_count_no_boundary"] = int(row["count_no_boundary"])
             flat[f"phase{label}_frac_total"] = float(row["frac_total"])
-            flat[f"phase{label}_frac_slag_roi"] = float(row["frac_slag_roi"])
             flat[f"phase{label}_frac_no_boundary"] = float(row["frac_no_boundary"])
-            # Primary phase fraction for quick comparison (sum ~= 1 over slag ROI phases)
-            flat[f"phase{label}_frac"] = float(row["frac_slag_roi"])
-            flat[f"phase{label}_excluded"] = int(row["is_excluded_from_slag_roi"])
+            # Primary phase fraction for quick comparison
+            flat[f"phase{label}_frac"] = float(row["frac_total"])
+            flat[f"phase{label}_excluded"] = int(row["is_excluded"])
             flat[f"phase{label}_is_boundary"] = int(row["is_boundary"])
             # Backward-compatible alias
             flat[f"phase{label}_count"] = int(row["count_total"])
@@ -832,15 +824,15 @@ def flatten_metrics_for_csv(metrics: dict) -> dict:
 
 def sort_summary_keys(keys: set[str]) -> list[str]:
     """
-    Keep general fields first, then group per-phase fields in a readable order.
+    Keep general fields first, then group phase fields by metric
+    (e.g., all phase*_frac_total together).
     """
     phase_field_order = {
         "count_total": 0,
-        "count_slag_roi": 1,
+        "count_no_boundary": 1,
         "frac_total": 2,
-        "frac_slag_roi": 3,
-        "frac_no_boundary": 4,
-        "frac": 5,
+        "frac_no_boundary": 3,
+        "frac": 4,
         "excluded": 6,
         "is_boundary": 7,
         "count": 8,
@@ -852,7 +844,7 @@ def sort_summary_keys(keys: set[str]) -> list[str]:
             return (0, key)
         label = int(m.group(1))
         field = m.group(2)
-        return (1, label, phase_field_order.get(field, 100), field)
+        return (1, phase_field_order.get(field, 100), label, field)
 
     return sorted(keys, key=_key_fn)
 
