@@ -1,0 +1,55 @@
+SEM segmentation stats
+
+mode: kmeans
+H: 960
+W: 1280
+n_pixels: 1228800
+k: 3
+boundary_label: None
+boundary_detected: False
+roi_excluded_labels: []
+interior_pixels: 1228800
+interior_area_frac: 1.0
+excluded_area_pixels: 0
+excluded_area_frac: 0.0
+boundary_area_frac: 0.0
+interior_label_count: 3
+phase_frac_primary: total
+phase_frac_sum_total: 1.0
+phase_frac_sum_no_boundary: 1.0
+closure_boundary_plus_phase_total: 1.0
+closure_excluded_plus_phase_total: 1.0
+boundary_length_px: 0
+boundary_length_density_per_px: 0.0
+infile: #3 Snapshot (Map + Point).tif
+method: sobel
+win: 25
+crop_bottom_frac: 0.0625
+min_dim: 0
+min_size: 0
+seed: 0
+user_exclude_labels: []
+kmeans_features: edge+intensity
+kmeans_w_edge: 1.0
+kmeans_w_int: 1.0
+kmeans_min_size: 4
+kmeans_inertia: 572746.9375
+k_eval_n: 20000
+kmeans_silhouette: 0.703612208366394
+kmeans_calinski_harabasz: 32985.45387010599
+kmeans_reassigned_px: 820
+
+class_stats:
+  label 0: frac=0.655732, edge=0.036109±0.056435, int=0.630130±0.015223
+  label 1: frac=0.189932, edge=0.071157±0.079247, int=0.397763±0.061172
+  label 2: frac=0.154335, edge=0.421241±0.102394, int=0.528288±0.114884
+
+phase_stats (no-boundary denominator):
+  label 0: count_total=805764, count_no_boundary=805764, frac_total=0.655732, frac_no_boundary=0.655732, edge=0.036109±0.056435, int=0.630130±0.015223
+  label 1: count_total=233389, count_no_boundary=233389, frac_total=0.189932, frac_no_boundary=0.189932, edge=0.071157±0.079247, int=0.397763±0.061172
+  label 2: count_total=189647, count_no_boundary=189647, frac_total=0.154335, frac_no_boundary=0.154335, edge=0.421241±0.102394, int=0.528288±0.114884
+
+phase_summary (grouped by metric):
+  phase 0: count_total=805764, count_no_boundary=805764, frac_total=0.655732, frac_no_boundary=0.655732, excluded=0, boundary=0
+  phase 1: count_total=233389, count_no_boundary=233389, frac_total=0.189932, frac_no_boundary=0.189932, excluded=0, boundary=0
+  phase 2: count_total=189647, count_no_boundary=189647, frac_total=0.154335, frac_no_boundary=0.154335, excluded=0, boundary=0

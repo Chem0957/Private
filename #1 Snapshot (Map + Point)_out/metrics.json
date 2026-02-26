@@ -1,0 +1,186 @@
+{
+  "mode": "kmeans",
+  "H": 960,
+  "W": 1280,
+  "n_pixels": 1228800,
+  "k": 3,
+  "class_stats": [
+    {
+      "label": 0,
+      "count": 706996,
+      "frac": 0.5753548177083333,
+      "edge_mean": 0.11332713067531586,
+      "edge_std": 0.08652807027101517,
+      "int_mean": 0.6076741218566895,
+      "int_std": 0.03783455118536949
+    },
+    {
+      "label": 1,
+      "count": 335569,
+      "frac": 0.2730867513020833,
+      "edge_mean": 0.1662040799856186,
+      "edge_std": 0.0919005423784256,
+      "int_mean": 0.3734831213951111,
+      "int_std": 0.08737730234861374
+    },
+    {
+      "label": 2,
+      "count": 186235,
+      "frac": 0.15155843098958333,
+      "edge_mean": 0.48556503653526306,
+      "edge_std": 0.12714160978794098,
+      "int_mean": 0.45741331577301025,
+      "int_std": 0.13956238329410553
+    }
+  ],
+  "boundary_label": null,
+  "boundary_detected": false,
+  "boundary_inference": {
+    "method": "thin_high_edge_small_area",
+    "max_area_frac": 0.12,
+    "min_thinness": 0.35,
+    "min_edge_quantile": 0.75,
+    "per_label": [
+      {
+        "label": 0,
+        "frac": 0.5753548177083333,
+        "edge_mean": 0.11332713067531586,
+        "thinness": 0.14322428981210644,
+        "edge_threshold": 0.32588455080986023,
+        "score": 0.12955832848273174,
+        "is_candidate": false
+      },
+      {
+        "label": 1,
+        "frac": 0.2730867513020833,
+        "edge_mean": 0.1662040799856186,
+        "thinness": 0.27744219519681496,
+        "edge_threshold": 0.32588455080986023,
+        "score": 0.21231610478749563,
+        "is_candidate": false
+      },
+      {
+        "label": 2,
+        "frac": 0.15155843098958333,
+        "edge_mean": 0.48556503653526306,
+        "thinness": 0.30240824764410557,
+        "edge_threshold": 0.32588455080986023,
+        "score": 0.632403908351138,
+        "is_candidate": false
+      }
+    ]
+  },
+  "roi_excluded_labels": [],
+  "interior_pixels": 1228800,
+  "interior_area_frac": 1.0,
+  "excluded_area_pixels": 0,
+  "excluded_area_frac": 0.0,
+  "boundary_area_frac": 0.0,
+  "interior_label_count": 3,
+  "phase_stats": [
+    {
+      "label": 0,
+      "count": 706996,
+      "frac": 0.5753548177083333,
+      "edge_mean": 0.11332713067531586,
+      "edge_std": 0.08652807027101517,
+      "int_mean": 0.6076741218566895,
+      "int_std": 0.03783455118536949,
+      "count_total": 706996,
+      "count_no_boundary": 706996,
+      "frac_total": 0.5753548177083333,
+      "frac_no_boundary": 0.5753548177083333
+    },
+    {
+      "label": 1,
+      "count": 335569,
+      "frac": 0.2730867513020833,
+      "edge_mean": 0.1662040799856186,
+      "edge_std": 0.0919005423784256,
+      "int_mean": 0.3734831213951111,
+      "int_std": 0.08737730234861374,
+      "count_total": 335569,
+      "count_no_boundary": 335569,
+      "frac_total": 0.2730867513020833,
+      "frac_no_boundary": 0.2730867513020833
+    },
+    {
+      "label": 2,
+      "count": 186235,
+      "frac": 0.15155843098958333,
+      "edge_mean": 0.48556503653526306,
+      "edge_std": 0.12714160978794098,
+      "int_mean": 0.45741331577301025,
+      "int_std": 0.13956238329410553,
+      "count_total": 186235,
+      "count_no_boundary": 186235,
+      "frac_total": 0.15155843098958333,
+      "frac_no_boundary": 0.15155843098958333
+    }
+  ],
+  "interior_class_stats": [
+    {
+      "label": 0,
+      "count": 706996,
+      "frac": 0.5753548177083333,
+      "edge_mean": 0.11332713067531586,
+      "edge_std": 0.08652807027101517,
+      "int_mean": 0.6076741218566895,
+      "int_std": 0.03783455118536949,
+      "count_total": 706996,
+      "count_no_boundary": 706996,
+      "frac_total": 0.5753548177083333,
+      "frac_no_boundary": 0.5753548177083333
+    },
+    {
+      "label": 1,
+      "count": 335569,
+      "frac": 0.2730867513020833,
+      "edge_mean": 0.1662040799856186,
+      "edge_std": 0.0919005423784256,
+      "int_mean": 0.3734831213951111,
+      "int_std": 0.08737730234861374,
+      "count_total": 335569,
+      "count_no_boundary": 335569,
+      "frac_total": 0.2730867513020833,
+      "frac_no_boundary": 0.2730867513020833
+    },
+    {
+      "label": 2,
+      "count": 186235,
+      "frac": 0.15155843098958333,
+      "edge_mean": 0.48556503653526306,
+      "edge_std": 0.12714160978794098,
+      "int_mean": 0.45741331577301025,
+      "int_std": 0.13956238329410553,
+      "count_total": 186235,
+      "count_no_boundary": 186235,
+      "frac_total": 0.15155843098958333,
+      "frac_no_boundary": 0.15155843098958333
+    }
+  ],
+  "phase_frac_primary": "total",
+  "phase_frac_sum_total": 0.9999999999999999,
+  "phase_frac_sum_no_boundary": 0.9999999999999999,
+  "closure_boundary_plus_phase_total": 0.9999999999999999,
+  "closure_excluded_plus_phase_total": 0.9999999999999999,
+  "boundary_length_px": 0,
+  "boundary_length_density_per_px": 0.0,
+  "infile": "#1 Snapshot (Map + Point).tif",
+  "method": "sobel",
+  "win": 25,
+  "crop_bottom_frac": 0.0625,
+  "min_dim": 0,
+  "min_size": 0,
+  "seed": 0,
+  "user_exclude_labels": [],
+  "kmeans_features": "edge+intensity",
+  "kmeans_w_edge": 1.0,
+  "kmeans_w_int": 1.0,
+  "kmeans_min_size": 4,
+  "kmeans_inertia": 856193.125,
+  "k_eval_n": 20000,
+  "kmeans_silhouette": 0.5003058314323425,
+  "kmeans_calinski_harabasz": 18847.220809209186,
+  "kmeans_reassigned_px": 6757
+}
