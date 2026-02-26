@@ -290,7 +290,22 @@ def seg_kmeans(
 def postprocess_binary(mask: np.ndarray, min_size: int) -> np.ndarray:
     if min_size is None or min_size <= 0:
         return mask.astype(bool)
-    return morphology.remove_small_objects(mask.astype(bool), min_size=min_size)
+    return _remove_small_objects_compat(mask.astype(bool), min_size=int(min_size))
+
+
+def _remove_small_objects_compat(mask: np.ndarray, min_size: int) -> np.ndarray:
+    """
+    Compat wrapper for skimage>=0.26 and older versions.
+    Old API: min_size removes objects with area < min_size.
+    New API: max_size removes objects with area <= max_size.
+    Equivalent mapping is max_size = min_size - 1.
+    """
+    if min_size <= 0:
+        return mask.astype(bool)
+    try:
+        return morphology.remove_small_objects(mask.astype(bool), max_size=max(int(min_size) - 1, 0))
+    except TypeError:
+        return morphology.remove_small_objects(mask.astype(bool), min_size=int(min_size))
 
 
 def postprocess_kmeans_labels(labels: np.ndarray, min_size: int) -> tuple[np.ndarray, int]:
@@ -307,7 +322,7 @@ def postprocess_kmeans_labels(labels: np.ndarray, min_size: int) -> tuple[np.nda
 
     for lab in np.unique(labels):
         mask = labels == int(lab)
-        keep = morphology.remove_small_objects(mask, min_size=int(min_size))
+        keep = _remove_small_objects_compat(mask, min_size=int(min_size))
         dropped = mask & ~keep
         if np.any(dropped):
             out[dropped] = -1
@@ -331,7 +346,8 @@ def _mask_thinness(mask: np.ndarray) -> float:
     area = int(np.sum(mask))
     if area <= 0:
         return float("nan")
-    eroded = morphology.binary_erosion(mask)
+    # `binary_erosion` is deprecated in skimage 0.26; use `erosion`.
+    eroded = morphology.erosion(mask.astype(bool), footprint=morphology.diamond(1))
     perimeter_px = int(np.sum(mask & ~eroded))
     return float(perimeter_px / float(area))
 
