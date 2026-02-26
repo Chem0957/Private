@@ -36,6 +36,7 @@ import csv
 import glob
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Sequence
@@ -491,9 +492,14 @@ def compute_metrics(
         if int(row["label"]) in excluded:
             continue
         phase_row = dict(row)
+        phase_count_total = int(row["count"])
         phase_count = int(np.sum((labels == int(row["label"])) & interior_mask))
-        phase_row["count"] = phase_count
-        phase_row["frac"] = float(phase_count / total) if total > 0 else float("nan")
+        phase_row["count_total"] = phase_count_total
+        phase_row["count_slag_roi"] = phase_count
+        # Backward-compatible aliases
+        phase_row["count"] = phase_count_total
+        phase_row["frac_total"] = float(phase_count_total / total) if total > 0 else float("nan")
+        phase_row["frac"] = phase_row["frac_total"]
         if interior_total > 0:
             phase_row["frac_slag_roi"] = float(phase_count / interior_total)
         else:
@@ -512,12 +518,24 @@ def compute_metrics(
     out["roi_excluded_labels"] = excluded_labels
     out["slag_roi_pixels"] = interior_total
     out["slag_roi_area_frac"] = float(interior_total / float(total)) if total > 0 else float("nan")
+    excluded_area_px = int(total - interior_total)
+    out["excluded_area_pixels"] = excluded_area_px
+    out["excluded_area_frac"] = float(excluded_area_px / float(total)) if total > 0 else float("nan")
     out["boundary_area_frac"] = float(np.mean(boundary_mask))
     out["interior_area_frac"] = float(interior_total / float(total)) if total > 0 else float("nan")
     out["interior_label_count"] = int(len(phase_stats))
     out["phase_stats"] = phase_stats
     # Backward-compatible alias
     out["interior_class_stats"] = phase_stats
+    out["phase_frac_primary"] = "slag_roi"
+    phase_frac_total_sum = float(np.sum([float(r["frac_total"]) for r in phase_stats])) if phase_stats else 0.0
+    phase_frac_slag_roi_sum = (
+        float(np.sum([float(r["frac_slag_roi"]) for r in phase_stats])) if interior_total > 0 and phase_stats else float("nan")
+    )
+    out["phase_frac_sum_total"] = phase_frac_total_sum
+    out["phase_frac_sum_slag_roi"] = phase_frac_slag_roi_sum
+    out["closure_boundary_plus_phase_total"] = float(out["boundary_area_frac"] + phase_frac_total_sum)
+    out["closure_excluded_plus_phase_total"] = float(out["excluded_area_frac"] + phase_frac_total_sum)
 
     out["boundary_length_px"] = boundary_length_px
     out["boundary_length_density_per_px"] = float(boundary_length_px / float(total)) if total > 0 else float("nan")
@@ -653,8 +671,77 @@ def save_phase_only_png(seg, metrics: dict, outdir: str, mode: str):
     plt.close(fig)
 
 
+def build_phase_summary_rows(metrics: dict) -> list[dict]:
+    """Build one row per label so phase metrics are easy to inspect."""
+    class_stats = metrics.get("class_stats", [])
+    if not class_stats:
+        return []
+
+    phase_map = {int(r["label"]): r for r in metrics.get("phase_stats", [])}
+    boundary_label = metrics.get("boundary_label")
+    excluded = set(int(x) for x in metrics.get("roi_excluded_labels", []))
+
+    rows = []
+    for row in sorted(class_stats, key=lambda r: int(r["label"])):
+        label = int(row["label"])
+        phase_row = phase_map.get(label)
+        if phase_row is None:
+            count_slag_roi = 0
+            frac_slag_roi = 0.0
+            frac_no_boundary = 0.0
+        else:
+            count_slag_roi = int(phase_row.get("count_slag_roi", phase_row.get("count", 0)))
+            frac_slag_roi = float(phase_row.get("frac_slag_roi", float("nan")))
+            frac_no_boundary = float(phase_row.get("frac_no_boundary", frac_slag_roi))
+
+        rows.append(
+            {
+                "phase_label": label,
+                "count_total": int(row["count"]),
+                "frac_total": float(row["frac"]),
+                "count_slag_roi": count_slag_roi,
+                "frac_slag_roi": frac_slag_roi,
+                "frac_no_boundary": frac_no_boundary,
+                "is_boundary": int(boundary_label is not None and int(boundary_label) == label),
+                "is_excluded_from_slag_roi": int(label in excluded),
+                "edge_mean": float(row["edge_mean"]),
+                "edge_std": float(row["edge_std"]),
+                "int_mean": float(row["int_mean"]),
+                "int_std": float(row["int_std"]),
+            }
+        )
+    return rows
+
+
+def save_phase_summary_csv(metrics: dict, outdir: str) -> None:
+    rows = build_phase_summary_rows(metrics)
+    if not rows:
+        return
+    csv_path = os.path.join(outdir, "phase_summary.csv")
+    fieldnames = [
+        "phase_label",
+        "count_total",
+        "frac_total",
+        "count_slag_roi",
+        "frac_slag_roi",
+        "frac_no_boundary",
+        "is_boundary",
+        "is_excluded_from_slag_roi",
+        "edge_mean",
+        "edge_std",
+        "int_mean",
+        "int_std",
+    ]
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        for row in rows:
+            w.writerow(row)
+
+
 def save_outputs(img, emap, seg, metrics: dict, outdir: str, mode: str):
     os.makedirs(outdir, exist_ok=True)
+    phase_summary_rows = build_phase_summary_rows(metrics)
 
     np.save(os.path.join(outdir, "img_cropped.npy"), img)
     np.save(os.path.join(outdir, "edge_map.npy"), emap)
@@ -683,29 +770,38 @@ def save_outputs(img, emap, seg, metrics: dict, outdir: str, mode: str):
             f.write("\nphase_stats (slag ROI denominator):\n")
             for row in metrics["phase_stats"]:
                 f.write(
-                    f"  label {row['label']}: frac_total={row['frac']:.6f}, "
+                    f"  label {row['label']}: count_total={row['count_total']}, "
+                    f"count_slag_roi={row['count_slag_roi']}, "
+                    f"frac_total={row['frac_total']:.6f}, "
                     f"frac_slag_roi={row['frac_slag_roi']:.6f}, "
                     f"edge={row['edge_mean']:.6f}±{row['edge_std']:.6f}, "
                     f"int={row['int_mean']:.6f}±{row['int_std']:.6f}\n"
                 )
+        if phase_summary_rows:
+            f.write("\nphase_summary (grouped by phase label):\n")
+            for row in phase_summary_rows:
+                f.write(
+                    f"  phase {row['phase_label']}: count_total={row['count_total']}, "
+                    f"count_slag_roi={row['count_slag_roi']}, "
+                    f"frac_total={row['frac_total']:.6f}, "
+                    f"frac_no_boundary={row['frac_no_boundary']:.6f}, "
+                    f"excluded={row['is_excluded_from_slag_roi']}, "
+                    f"boundary={row['is_boundary']}\n"
+                )
 
     save_quicklook(img, emap, seg, outdir, mode)
     save_phase_only_png(seg, metrics, outdir, mode)
+    save_phase_summary_csv(metrics, outdir)
 
 
 def flatten_metrics_for_csv(metrics: dict) -> dict:
     flat = {}
+    phase_summary_rows = build_phase_summary_rows(metrics)
     for k, v in metrics.items():
         if k == "class_stats":
             flat["class_stats"] = json.dumps(v, ensure_ascii=False)
         elif k == "phase_stats":
             flat["phase_stats"] = json.dumps(v, ensure_ascii=False)
-            for row in v:
-                label = int(row["label"])
-                flat[f"phase{label}_count"] = int(row["count"])
-                flat[f"phase{label}_frac_total"] = float(row["frac"])
-                flat[f"phase{label}_frac_slag_roi"] = float(row["frac_slag_roi"])
-                flat[f"phase{label}_frac_no_boundary"] = float(row["frac_no_boundary"])
         elif k in {
             "interior_class_stats",
             "roi_excluded_labels",
@@ -715,7 +811,50 @@ def flatten_metrics_for_csv(metrics: dict) -> dict:
             flat[k] = json.dumps(v, ensure_ascii=False)
         else:
             flat[k] = v
+
+    if phase_summary_rows:
+        flat["phase_summary"] = json.dumps(phase_summary_rows, ensure_ascii=False)
+        for row in phase_summary_rows:
+            label = int(row["phase_label"])
+            flat[f"phase{label}_count_total"] = int(row["count_total"])
+            flat[f"phase{label}_count_slag_roi"] = int(row["count_slag_roi"])
+            flat[f"phase{label}_frac_total"] = float(row["frac_total"])
+            flat[f"phase{label}_frac_slag_roi"] = float(row["frac_slag_roi"])
+            flat[f"phase{label}_frac_no_boundary"] = float(row["frac_no_boundary"])
+            # Primary phase fraction for quick comparison (sum ~= 1 over slag ROI phases)
+            flat[f"phase{label}_frac"] = float(row["frac_slag_roi"])
+            flat[f"phase{label}_excluded"] = int(row["is_excluded_from_slag_roi"])
+            flat[f"phase{label}_is_boundary"] = int(row["is_boundary"])
+            # Backward-compatible alias
+            flat[f"phase{label}_count"] = int(row["count_total"])
     return flat
+
+
+def sort_summary_keys(keys: set[str]) -> list[str]:
+    """
+    Keep general fields first, then group per-phase fields in a readable order.
+    """
+    phase_field_order = {
+        "count_total": 0,
+        "count_slag_roi": 1,
+        "frac_total": 2,
+        "frac_slag_roi": 3,
+        "frac_no_boundary": 4,
+        "frac": 5,
+        "excluded": 6,
+        "is_boundary": 7,
+        "count": 8,
+    }
+
+    def _key_fn(key: str):
+        m = re.fullmatch(r"phase(\d+)_(.+)", key)
+        if m is None:
+            return (0, key)
+        label = int(m.group(1))
+        field = m.group(2)
+        return (1, label, phase_field_order.get(field, 100), field)
+
+    return sorted(keys, key=_key_fn)
 
 
 # -----------------------------
@@ -1096,7 +1235,7 @@ def run_sweep_mode(args):
                     summary_rows.append(row)
 
     csv_path = os.path.join(outroot, "summary.csv")
-    keys = sorted({k for row in summary_rows for k in row.keys()})
+    keys = sort_summary_keys({k for row in summary_rows for k in row.keys()})
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=keys)
         w.writeheader()
