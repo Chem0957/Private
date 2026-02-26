@@ -730,6 +730,72 @@ def save_phase_summary_csv(metrics: dict, outdir: str) -> None:
         w.writeheader()
         for row in rows:
             w.writerow(row)
+    save_styled_xlsx(rows, fieldnames, os.path.join(outdir, "phase_summary.xlsx"))
+
+
+def save_styled_xlsx(rows: list[dict], fieldnames: list[str], outpath: str) -> bool:
+    """
+    Save table as XLSX with:
+    - Arial font for all cells
+    - center alignment for all cells
+    - bold on no_boundary-related columns
+    """
+    if not rows:
+        return False
+
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font
+        from openpyxl.utils import get_column_letter
+    except ModuleNotFoundError:
+        if not getattr(save_styled_xlsx, "_warned_missing_openpyxl", False):
+            print(
+                "[WARN] openpyxl is not installed. "
+                "CSV is saved, but styled XLSX is skipped. "
+                "Install with: python3 -m pip install openpyxl"
+            )
+            save_styled_xlsx._warned_missing_openpyxl = True
+        return False
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "data"
+
+    ws.append(fieldnames)
+    for row in rows:
+        ws.append([row.get(k, "") for k in fieldnames])
+
+    align_center = Alignment(horizontal="center", vertical="center")
+    font_normal = Font(name="Arial", bold=False)
+    font_bold = Font(name="Arial", bold=True)
+
+    no_boundary_cols = {
+        idx + 1 for idx, name in enumerate(fieldnames) if "no_boundary" in str(name)
+    }
+
+    for row in ws.iter_rows(
+        min_row=1,
+        max_row=ws.max_row,
+        min_col=1,
+        max_col=ws.max_column,
+    ):
+        for cell in row:
+            cell.alignment = align_center
+            if cell.col_idx in no_boundary_cols:
+                cell.font = font_bold
+            else:
+                cell.font = font_normal
+
+    for idx, key in enumerate(fieldnames, start=1):
+        samples = [str(key)]
+        for row in rows:
+            v = row.get(key, "")
+            samples.append("" if v is None else str(v))
+        max_len = max(len(s) for s in samples) if samples else 10
+        ws.column_dimensions[get_column_letter(idx)].width = min(max_len + 2, 50)
+
+    wb.save(outpath)
+    return True
 
 
 def save_outputs(img, emap, seg, metrics: dict, outdir: str, mode: str):
@@ -1233,9 +1299,13 @@ def run_sweep_mode(args):
         w.writeheader()
         for row in summary_rows:
             w.writerow(row)
+    xlsx_path = os.path.join(outroot, "summary.xlsx")
+    saved_xlsx = save_styled_xlsx(summary_rows, keys, xlsx_path)
 
     print("[DONE] sweep")
     print(f"Summary saved: {csv_path}")
+    if saved_xlsx:
+        print(f"Styled summary saved: {xlsx_path}")
 
 def main():
     args = parse_args()
