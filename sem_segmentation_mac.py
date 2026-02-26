@@ -36,7 +36,9 @@ import csv
 import glob
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional, Sequence
 
 try:
     import numpy as np
@@ -291,10 +293,129 @@ def postprocess_binary(mask: np.ndarray, min_size: int) -> np.ndarray:
     return morphology.remove_small_objects(mask.astype(bool), min_size=min_size)
 
 
+def postprocess_kmeans_labels(labels: np.ndarray, min_size: int) -> tuple[np.ndarray, int]:
+    """
+    Remove tiny islands per label and reassign dropped pixels by nearest valid label.
+    Returns (cleaned_labels, reassigned_pixel_count).
+    """
+    if min_size is None or int(min_size) <= 0:
+        return labels.astype(np.int32), 0
+
+    labels = labels.astype(np.int32)
+    out = labels.copy()
+    removed_mask = np.zeros(labels.shape, dtype=bool)
+
+    for lab in np.unique(labels):
+        mask = labels == int(lab)
+        keep = morphology.remove_small_objects(mask, min_size=int(min_size))
+        dropped = mask & ~keep
+        if np.any(dropped):
+            out[dropped] = -1
+            removed_mask |= dropped
+
+    n_removed = int(np.sum(removed_mask))
+    if n_removed == 0:
+        return out, 0
+
+    valid = out >= 0
+    if not np.any(valid):
+        return labels, 0
+
+    _, nn_idx = distance_transform_edt(~valid, return_indices=True)
+    out[~valid] = out[nn_idx[0][~valid], nn_idx[1][~valid]]
+    return out.astype(np.int32), n_removed
+
+
+def _mask_thinness(mask: np.ndarray) -> float:
+    """Approximate line-likeness as perimeter pixels / area pixels."""
+    area = int(np.sum(mask))
+    if area <= 0:
+        return float("nan")
+    eroded = morphology.binary_erosion(mask)
+    perimeter_px = int(np.sum(mask & ~eroded))
+    return float(perimeter_px / float(area))
+
+
+def infer_boundary_label(
+    labels: np.ndarray,
+    emap: np.ndarray,
+    class_stats: list[dict],
+    max_area_frac: float = 0.12,
+    min_thinness: float = 0.35,
+    min_edge_quantile: float = 0.75,
+) -> tuple[Optional[int], dict]:
+    """
+    Infer boundary label as a class that is:
+    - small area fraction
+    - line-like (high thinness)
+    - in upper edge-mean quantile
+    """
+    if not class_stats:
+        return None, {
+            "method": "thin_high_edge_small_area",
+            "max_area_frac": float(max_area_frac),
+            "min_thinness": float(min_thinness),
+            "min_edge_quantile": float(min_edge_quantile),
+            "per_label": [],
+        }
+
+    edge_means = np.array([float(r["edge_mean"]) for r in class_stats], dtype=np.float32)
+    edge_thr = float(np.quantile(edge_means, float(min_edge_quantile)))
+
+    rows = []
+    for row in class_stats:
+        lab = int(row["label"])
+        mask = labels == lab
+        thinness = _mask_thinness(mask)
+        score = float(row["edge_mean"]) * (1.0 + (0.0 if np.isnan(thinness) else thinness))
+        is_candidate = (
+            float(row["frac"]) <= float(max_area_frac)
+            and (not np.isnan(thinness))
+            and thinness >= float(min_thinness)
+            and float(row["edge_mean"]) >= edge_thr
+        )
+        rows.append(
+            {
+                "label": lab,
+                "frac": float(row["frac"]),
+                "edge_mean": float(row["edge_mean"]),
+                "thinness": float(thinness),
+                "edge_threshold": edge_thr,
+                "score": float(score),
+                "is_candidate": bool(is_candidate),
+            }
+        )
+
+    candidates = [r for r in rows if r["is_candidate"]]
+    if not candidates:
+        return None, {
+            "method": "thin_high_edge_small_area",
+            "max_area_frac": float(max_area_frac),
+            "min_thinness": float(min_thinness),
+            "min_edge_quantile": float(min_edge_quantile),
+            "per_label": rows,
+        }
+
+    best = max(candidates, key=lambda r: float(r["score"]))
+    return int(best["label"]), {
+        "method": "thin_high_edge_small_area",
+        "max_area_frac": float(max_area_frac),
+        "min_thinness": float(min_thinness),
+        "min_edge_quantile": float(min_edge_quantile),
+        "per_label": rows,
+    }
+
+
 # -----------------------------
 # Metrics
 # -----------------------------
-def compute_metrics(img: np.ndarray, emap: np.ndarray, seg, mode: str) -> dict:
+def compute_metrics(
+    img: np.ndarray,
+    emap: np.ndarray,
+    seg,
+    mode: str,
+    exclude_labels: Optional[Sequence[int]] = None,
+) -> dict:
     out = {
         "mode": mode,
         "H": int(img.shape[0]),
@@ -313,7 +434,7 @@ def compute_metrics(img: np.ndarray, emap: np.ndarray, seg, mode: str) -> dict:
 
     labels = seg.astype(np.int32)
     labs, counts = np.unique(labels, return_counts=True)
-    total = counts.sum()
+    total = int(counts.sum())
     k = int(labs.max() + 1)
     out["k"] = k
 
@@ -331,54 +452,79 @@ def compute_metrics(img: np.ndarray, emap: np.ndarray, seg, mode: str) -> dict:
                 "int_std": float(np.std(img[m])) if np.any(m) else float("nan"),
             }
         )
-    boundary_label = k - 1
-    boundary_mask = labels == boundary_label
-    interior_mask = ~boundary_mask
+    boundary_label, boundary_info = infer_boundary_label(labels, emap, class_stats)
+
+    excluded = set()
+    if exclude_labels is not None:
+        excluded.update(int(x) for x in exclude_labels)
+    if boundary_label is not None:
+        excluded.add(int(boundary_label))
+    excluded_labels = sorted(excluded)
+
+    if excluded_labels:
+        slag_roi_mask = ~np.isin(labels, np.array(excluded_labels, dtype=np.int32))
+    else:
+        slag_roi_mask = np.ones(labels.shape, dtype=bool)
+
+    boundary_mask = labels == int(boundary_label) if boundary_label is not None else np.zeros(labels.shape, dtype=bool)
+    interior_mask = slag_roi_mask
     interior_total = int(np.sum(interior_mask))
 
     phase_stats = []
     for row in class_stats:
-        if row["label"] == boundary_label:
+        if int(row["label"]) in excluded:
             continue
         phase_row = dict(row)
+        phase_count = int(np.sum((labels == int(row["label"])) & interior_mask))
+        phase_row["count"] = phase_count
+        phase_row["frac"] = float(phase_count / total) if total > 0 else float("nan")
         if interior_total > 0:
-            phase_row["frac_no_boundary"] = float(phase_row["count"] / interior_total)
+            phase_row["frac_slag_roi"] = float(phase_count / interior_total)
         else:
-            phase_row["frac_no_boundary"] = float("nan")
+            phase_row["frac_slag_roi"] = float("nan")
+        # Backward-compatible key
+        phase_row["frac_no_boundary"] = phase_row["frac_slag_roi"]
         phase_stats.append(phase_row)
 
     skel = skeletonize(boundary_mask)
     boundary_length_px = int(np.sum(skel))
 
     out["class_stats"] = class_stats
-    out["boundary_label"] = boundary_label
+    out["boundary_label"] = int(boundary_label) if boundary_label is not None else None
+    out["boundary_detected"] = bool(boundary_label is not None)
+    out["boundary_inference"] = boundary_info
+    out["roi_excluded_labels"] = excluded_labels
+    out["slag_roi_pixels"] = interior_total
+    out["slag_roi_area_frac"] = float(interior_total / float(total)) if total > 0 else float("nan")
     out["boundary_area_frac"] = float(np.mean(boundary_mask))
-    out["interior_area_frac"] = float(interior_total / float(total))
+    out["interior_area_frac"] = float(interior_total / float(total)) if total > 0 else float("nan")
     out["interior_label_count"] = int(len(phase_stats))
     out["phase_stats"] = phase_stats
     # Backward-compatible alias
     out["interior_class_stats"] = phase_stats
 
     out["boundary_length_px"] = boundary_length_px
-    out["boundary_length_density_per_px"] = float(boundary_length_px / float(total))
+    out["boundary_length_density_per_px"] = float(boundary_length_px / float(total)) if total > 0 else float("nan")
 
-    if k >= 3:
-        shell_label = k - 2
-        shell_mask = labels == shell_label
+    if k >= 3 and boundary_label is not None:
+        shell_candidates = [r for r in class_stats if int(r["label"]) not in excluded]
+        if shell_candidates:
+            shell_label = int(max(shell_candidates, key=lambda r: float(r["edge_mean"]))["label"])
+            shell_mask = (labels == shell_label) & interior_mask
 
-        dt = distance_transform_edt(~boundary_mask)
-        shell_dist = dt[shell_mask] if np.any(shell_mask) else np.array([], dtype=np.float32)
+            dt = distance_transform_edt(~boundary_mask)
+            shell_dist = dt[shell_mask] if np.any(shell_mask) else np.array([], dtype=np.float32)
 
-        out["shell_label"] = shell_label
-        out["shell_area_frac"] = float(np.mean(shell_mask))
-        if shell_dist.size > 0:
-            out["shell_thickness_px_mean"] = float(np.mean(shell_dist))
-            out["shell_thickness_px_median"] = float(np.median(shell_dist))
-            out["shell_thickness_px_p90"] = float(np.quantile(shell_dist, 0.90))
-        else:
-            out["shell_thickness_px_mean"] = float("nan")
-            out["shell_thickness_px_median"] = float("nan")
-            out["shell_thickness_px_p90"] = float("nan")
+            out["shell_label"] = shell_label
+            out["shell_area_frac"] = float(np.mean(shell_mask))
+            if shell_dist.size > 0:
+                out["shell_thickness_px_mean"] = float(np.mean(shell_dist))
+                out["shell_thickness_px_median"] = float(np.median(shell_dist))
+                out["shell_thickness_px_p90"] = float(np.quantile(shell_dist, 0.90))
+            else:
+                out["shell_thickness_px_mean"] = float("nan")
+                out["shell_thickness_px_median"] = float("nan")
+                out["shell_thickness_px_p90"] = float("nan")
 
     return out
 
@@ -445,17 +591,18 @@ def save_quicklook(img, emap, seg, outdir, mode):
 
 
 def save_phase_only_png(seg, metrics: dict, outdir: str, mode: str):
-    """Save k-means phase map with boundary label hidden as black."""
+    """Save k-means phase map with excluded ROI labels hidden as black."""
     if mode != "kmeans":
         return
 
     labels = seg.astype(np.int32)
-    boundary_label = int(metrics.get("boundary_label", int(np.max(labels))))
+    excluded_labels = sorted(int(x) for x in metrics.get("roi_excluded_labels", []))
+    excluded_set = set(excluded_labels)
 
     phase_rows = metrics.get("phase_stats", [])
-    phase_labels = [int(row["label"]) for row in phase_rows if int(row["label"]) != boundary_label]
+    phase_labels = [int(row["label"]) for row in phase_rows if int(row["label"]) not in excluded_set]
     if not phase_labels:
-        phase_labels = [int(l) for l in np.unique(labels) if int(l) != boundary_label]
+        phase_labels = [int(l) for l in np.unique(labels) if int(l) not in excluded_set]
 
     if not phase_labels:
         return
@@ -469,7 +616,7 @@ def save_phase_only_png(seg, metrics: dict, outdir: str, mode: str):
 
     cmap, norm = make_discrete_label_cmap(len(phase_labels))
     cmap = mcolors.ListedColormap(cmap.colors.copy())
-    cmap.set_bad(color=(0.0, 0.0, 0.0, 1.0))  # boundary shown as black
+    cmap.set_bad(color=(0.0, 0.0, 0.0, 1.0))  # excluded ROI labels shown as black
 
     fig, ax = plt.subplots(1, 1, figsize=(6, 6), constrained_layout=True)
     im = ax.imshow(
@@ -478,7 +625,7 @@ def save_phase_only_png(seg, metrics: dict, outdir: str, mode: str):
         norm=norm,
         interpolation="nearest",
     )
-    ax.set_title("Phase map (boundary excluded)")
+    ax.set_title("Phase map (slag ROI)")
     ax.axis("off")
 
     ticks = np.arange(len(phase_labels))
@@ -503,7 +650,7 @@ def save_outputs(img, emap, seg, metrics: dict, outdir: str, mode: str):
     with open(os.path.join(outdir, "stats.txt"), "w", encoding="utf-8") as f:
         f.write("SEM segmentation stats\n\n")
         for k, v in metrics.items():
-            if k in {"class_stats", "phase_stats", "interior_class_stats"}:
+            if k in {"class_stats", "phase_stats", "interior_class_stats", "boundary_inference"}:
                 continue
             f.write(f"{k}: {v}\n")
 
@@ -517,11 +664,11 @@ def save_outputs(img, emap, seg, metrics: dict, outdir: str, mode: str):
                 )
 
         if "phase_stats" in metrics:
-            f.write("\nphase_stats (boundary excluded):\n")
+            f.write("\nphase_stats (slag ROI denominator):\n")
             for row in metrics["phase_stats"]:
                 f.write(
                     f"  label {row['label']}: frac_total={row['frac']:.6f}, "
-                    f"frac_no_boundary={row['frac_no_boundary']:.6f}, "
+                    f"frac_slag_roi={row['frac_slag_roi']:.6f}, "
                     f"edge={row['edge_mean']:.6f}±{row['edge_std']:.6f}, "
                     f"int={row['int_mean']:.6f}±{row['int_std']:.6f}\n"
                 )
@@ -541,9 +688,15 @@ def flatten_metrics_for_csv(metrics: dict) -> dict:
                 label = int(row["label"])
                 flat[f"phase{label}_count"] = int(row["count"])
                 flat[f"phase{label}_frac_total"] = float(row["frac"])
+                flat[f"phase{label}_frac_slag_roi"] = float(row["frac_slag_roi"])
                 flat[f"phase{label}_frac_no_boundary"] = float(row["frac_no_boundary"])
-        elif k == "interior_class_stats":
-            flat["interior_class_stats"] = json.dumps(v, ensure_ascii=False)
+        elif k in {
+            "interior_class_stats",
+            "roi_excluded_labels",
+            "user_exclude_labels",
+            "boundary_inference",
+        }:
+            flat[k] = json.dumps(v, ensure_ascii=False)
         else:
             flat[k] = v
     return flat
@@ -552,10 +705,6 @@ def flatten_metrics_for_csv(metrics: dict) -> dict:
 # -----------------------------
 # Python-first config & API
 # -----------------------------
-from dataclasses import dataclass
-from typing import Optional
-from pathlib import Path
-
 @dataclass
 class RunConfig:
     # Shared
@@ -572,6 +721,8 @@ class RunConfig:
     kmeans_features: str = "edge+intensity"  # "edge" or "edge+intensity"
     kmeans_w_edge: float = 1.0
     kmeans_w_int: float = 1.0
+    kmeans_min_size: int = 4
+    roi_exclude_labels: tuple[int, ...] = ()
 
 
 def _validate_config(cfg: RunConfig) -> None:
@@ -602,6 +753,14 @@ def _validate_config(cfg: RunConfig) -> None:
             raise ValueError(f"kmeans_w_edge must be > 0. Got {cfg.kmeans_w_edge}")
         if cfg.kmeans_w_int is None or float(cfg.kmeans_w_int) <= 0:
             raise ValueError(f"kmeans_w_int must be > 0. Got {cfg.kmeans_w_int}")
+        if cfg.kmeans_min_size is None or int(cfg.kmeans_min_size) < 0:
+            raise ValueError(f"kmeans_min_size must be >= 0. Got {cfg.kmeans_min_size}")
+        if cfg.roi_exclude_labels is None:
+            raise ValueError("roi_exclude_labels must not be None")
+        if any(int(x) < 0 for x in cfg.roi_exclude_labels):
+            raise ValueError(
+                f"roi_exclude_labels must be >= 0. Got {cfg.roi_exclude_labels}"
+            )
 
 
 def run(infile: str, cfg: RunConfig, outdir: Optional[str] = None) -> dict:
@@ -646,8 +805,17 @@ def run(infile: str, cfg: RunConfig, outdir: Optional[str] = None) -> dict:
             w_edge=float(cfg.kmeans_w_edge),
             w_int=float(cfg.kmeans_w_int),
         )
+        seg, n_reassigned = postprocess_kmeans_labels(seg, min_size=int(cfg.kmeans_min_size))
+        kinfo["kmeans_min_size"] = int(cfg.kmeans_min_size)
+        kinfo["kmeans_reassigned_px"] = int(n_reassigned)
 
-    metrics = compute_metrics(img, emap, seg, mode=str(cfg.mode))
+    metrics = compute_metrics(
+        img,
+        emap,
+        seg,
+        mode=str(cfg.mode),
+        exclude_labels=list(cfg.roi_exclude_labels),
+    )
 
     # Metadata
     metrics["infile"] = infile_path.name
@@ -657,12 +825,14 @@ def run(infile: str, cfg: RunConfig, outdir: Optional[str] = None) -> dict:
     metrics["min_dim"] = int(cfg.min_dim)
     metrics["min_size"] = int(cfg.min_size)
     metrics["seed"] = int(cfg.seed)
+    metrics["user_exclude_labels"] = [int(x) for x in cfg.roi_exclude_labels]
 
     if cfg.mode == "kmeans":
         metrics["k"] = int(cfg.k)
         metrics["kmeans_features"] = str(cfg.kmeans_features)
         metrics["kmeans_w_edge"] = float(cfg.kmeans_w_edge)
         metrics["kmeans_w_int"] = float(cfg.kmeans_w_int)
+        metrics["kmeans_min_size"] = int(cfg.kmeans_min_size)
         metrics.update(kinfo)
 
     save_outputs(img, emap, seg, metrics, str(outdir_path), mode=str(cfg.mode))
@@ -710,6 +880,19 @@ def parse_args():
         default=1.0,
         help="(kmeans only) post-standardization weight for intensity feature",
     )
+    p.add_argument(
+        "--kmeans_min_size",
+        type=int,
+        default=4,
+        help="(kmeans only) remove islands smaller than this size, then nearest-label reassign",
+    )
+    p.add_argument(
+        "--exclude_labels",
+        type=int,
+        nargs="*",
+        default=[],
+        help="(kmeans only) labels to exclude from slag ROI denominator",
+    )
 
     # sweep mode (keep as-is; uses existing run_sweep_mode)
     p.add_argument("--input", default="", help='Glob pattern or directory (e.g. "./data/*.tif")')
@@ -733,6 +916,8 @@ def args_to_config(args) -> RunConfig:
         kmeans_features=str(args.kmeans_features),
         kmeans_w_edge=float(args.kmeans_w_edge),
         kmeans_w_int=float(args.kmeans_w_int),
+        kmeans_min_size=int(args.kmeans_min_size),
+        roi_exclude_labels=tuple(sorted(set(int(x) for x in args.exclude_labels))),
     )
 
 
@@ -861,6 +1046,8 @@ def run_sweep_mode(args):
                     kmeans_features=cfg0.kmeans_features,
                     kmeans_w_edge=cfg0.kmeans_w_edge,
                     kmeans_w_int=cfg0.kmeans_w_int,
+                    kmeans_min_size=cfg0.kmeans_min_size,
+                    roi_exclude_labels=cfg0.roi_exclude_labels,
                 )
                 outdir = os.path.join(outroot, base, "mode_otsu", f"win_{win}")
                 metrics = run(infile, cfg, outdir=outdir)
@@ -883,6 +1070,8 @@ def run_sweep_mode(args):
                         kmeans_features=cfg0.kmeans_features,
                         kmeans_w_edge=cfg0.kmeans_w_edge,
                         kmeans_w_int=cfg0.kmeans_w_int,
+                        kmeans_min_size=cfg0.kmeans_min_size,
+                        roi_exclude_labels=cfg0.roi_exclude_labels,
                     )
                     outdir = os.path.join(outroot, base, "mode_kmeans", f"k_{k}", f"win_{win}")
                     metrics = run(infile, cfg, outdir=outdir)
